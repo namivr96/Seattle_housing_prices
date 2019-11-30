@@ -1,0 +1,208 @@
+---
+title: "Project_STAT512"
+author: "All"
+date: "11/25/2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+``` {r load libraries}
+library(car)
+library(alr4)
+library(ALSM)
+library(onewaytests)
+library(MASS)
+library(fmsb)
+library(leaps)
+library(caret)
+```
+
+``` {r load house price data}
+#library(moderndive)
+#library(tidyverse) # these libraries contain house prices dataset
+#data("house_prices") # load it into workspace
+#detach("package:moderndive", unload = TRUE)
+#detach("package:tidyverse", unload = TRUE)
+
+patha = "/Users/namrataraghavan/Downloads/"
+
+data_subset = "price_data_sample_1000.csv"
+read_file = paste(patha, data_subset, sep='')
+
+#data_all = "kc_house_data.csv"
+#read_file = paste(patha, data_all, sep='')
+
+house_prices = read.csv(read_file, header=TRUE, sep=",") # read.table() also works
+sum(is.na(house_prices))
+
+indc = which.max(house_prices$bedrooms)
+house_prices = house_prices[-indc,]
+indc = which.max(house_prices$sqft_lot)
+house_prices = house_prices[-indc,]
+
+```
+
+```{r select subset of 7 predictors}
+predictor_names=c("price","bedrooms","bathrooms","sqft_living","sqft_lot", "sqft_above", "sqft_living15", "floors", "grade")
+predictor_names
+
+price_data = house_prices[,predictor_names]
+
+N=1000 # Randomly sample N observations
+price_data <- house_prices[sample(N), predictor_names]
+ ### Shuffle data and pick a training data -- this is just one method of random sampling
+#set.seed(123)
+        # training = createDataPartition(price_data$price, p=0.3,list=FALSE)
+        # price_data_subset = price_data[training,predictor_names]
+
+# Remove outliers
+
+sapply(price_data, typeof)
+
+# price_data <- scale(price_data)
+# price_data <- data.frame(price_data)
+
+ # Pearson correlation matrix of the predictors
+ nl = length(predictor_names)
+ M = cor(price_data[,predictor_names[2:nl]]) 
+ library(corrplot)
+ corrplot(M, method="color")
+```
+
+```{r}
+ x=c("bedrooms","bathrooms","sqft_living","sqft_lot", "sqft_above", "sqft_living15", "floors", "grade")
+ plot(price_data[,x], price_data$price)
+```
+
+
+```{r Linear regression}
+model_lm <- lm(price~., price_data)
+summary(model_lm)
+anova(model_lm)
+
+residualPlots(model_lm, smooth = F)
+```
+
+
+```{r Diagnostics}
+# BF test --> If there's an error here, it's likely due to "moderndive" and "tidyverse" libraries
+price_data$fit = model_lm$fitted.values
+price_data$group <- cut(price_data$fit, 5)
+price_data$residual<-model_lm$residuals
+bf.test(residual~group, price_data) 
+
+#shapiro, non normal
+resid = residuals(model_lm)
+shapiro.test(resid[sample(5000)])
+qqnorm(resid); qqline(resid)
+
+```
+
+```{r Box-Cox}
+#bcmle<-boxcox(model_lm,lambda=seq(-3,3, by=0.1)) # Maximum likelihood method
+#lambda<-bcmle$x[which.max(bcmle$y)]
+#lambda
+#lam <- lambda
+
+### Below is Box Cox based on minimum SSE
+X=price_data[,predictor_names[2:nl]]
+X=as.matrix.data.frame(X)
+goat = boxcox.sse(X[sample(50)],price_data$price[sample(50)],l=seq(-0.5,0.5,0.01))
+lambda = goat$lambda[which.min(goat$SSE)]
+lambda # This is -0.19, depending on random sampling of data
+lam <- lambda
+
+```
+
+```{r Best Subset, Stepwise regression}
+bs<-BestSub(price_data[,2:nl], price_data$price**lam, num=1)  
+bs
+
+price_data = price_data[,predictor_names]
+step(lm(price**lam~., data = price_data), method="both", trace=TRUE)
+
+```
+
+```{r New model}
+# Use best predictors from above analysis
+model_lm <- lm(price**lam~ bathrooms+sqft_living+sqft_above+sqft_living15+floors+grade, price_data)
+#shapiro.test(residuals(model_lm))
+summary(model_lm)
+
+#write.csv(price_data,'price_data_sample_5000.csv')
+
+```
+
+```{r Additional analysis}
+# Multicollinearity
+vif(model_lm)
+
+## Weighted regression -- gives pretty much similar parameters
+#f1 = lm(abs(residuals(model_lm)) ~ model.matrix(model_lm))
+#wghts = 1/f1$fitted.values**2
+#model_lm_wght = lm(price**lam ~ bathrooms+sqft_living+sqft_above+sqft_living15+floors+grade, data = price_data, weights = wghts)
+
+avPlots(model_lm) # Added variable plots
+
+dfbetasPlots(model_lm) 
+
+fits_lm = dffits(model_lm)
+betas_lm = dfbetas(model_lm)
+indc = which(abs(betas_lm) > 1)
+
+if (length(indc) == 0) {
+        sprintf("No influential point according to DFBETAS test")
+} else {
+        sprintf("There are influential points")
+}
+
+
+influenza = influencePlot(model_lm)
+
+hati = lm.influence(model_lm)
+critical_h = 2*mean(hati$hat) # critical value for detecting X-outlier
+N = 1000
+critical_infl = qf(0.2,length(model_lm$coefficients), N-length(model_lm$coefficients))
+my_cook = cooks.distance(model_lm)
+which(my_cook > critical_infl) # identify influenctial point based on Cook's distance
+
+plot(model_lm,pch=18,col='red',which=c(4))
+plot(model_lm, pch=18, col="red",which=c(6))
+plot(model_lm, pch=18, col="red",which=c(5))
+
+## Cross-validation
+set.seed(123)
+# 5-fold cross validation repeated 3 times -- mean error is reported
+train.control = trainControl(method='cv', number=5) 
+
+#step.model = train(price**lam ~ bathrooms+sqft_living+sqft_above+sqft_living15+floors+grade, data=price_data, method='leapBackward', trControl=train.control)
+step.model = train(price_data[,2:nl], price_data$price**lam, method='leapBackward', trControl=train.control)
+step.model$results
+
+
+```
+```{r : Diagnostics after Box Cox}
+# BF test --> If there's an error here, it's likely due to "moderndive" and "tidyverse" libraries
+model_lm_tran <- lm(price**lam~ bathrooms+sqft_living+sqft_above+sqft_living15+floors+grade, price_data)
+#shapiro.test(residuals(model_lm))
+summary(model_lm)
+
+price_data$fit = model_lm_tran$fitted.values
+price_data$group <- cut(price_data$fit, 5)
+price_data$residual<-model_lm_tran$residuals
+bf.test(residual~group, price_data) 
+
+#shapiro, non normal
+resid = residuals(model_lm_tran)
+shapiro.test(resid)
+qqnorm(resid); qqline(resid)
+
+```
+
+
+
+
+
